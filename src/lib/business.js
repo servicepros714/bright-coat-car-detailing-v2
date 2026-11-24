@@ -105,9 +105,9 @@ export function serviceTotal(pkgId, addon) {
 // link stay hidden while this is empty.
 // From the Google profile, Nov 2026 (all 5 stars). Left out because they describe visiting
 // a shop: Lunar W. ("my parents took me here"), Hung P. ("would visit again"), Mai L. ("I came
-// here"). Bhawani B.'s review is cut where Google truncates it.
+// here"). Also left out: Alma D. (same reviewer appears on Bonnie's profile; owner asked to drop it).
+// Bhawani B.'s review is cut where Google truncates it.
 export const REVIEWS = [
-  { name: 'Alma D.', text: 'I had a great experience with Bright Coat Car Detailing. Marcus was friendly, easy to work with, and clearly took pride in the job. My car needed some serious attention, and the difference afterward was impressive. Everything felt fresh and carefully finished, from the interior to the exterior. Thanks, Marcus, for the excellent work!' },
   { name: 'Corrie M.', text: "I had a friend tell me about these guys and I'm so glad I took their advice. They were fast and made my SUV look great. Will be coming back soon for sure." },
   { name: 'Bhawani B.', text: 'I went with these guys because they were reasonable on price and timing, even though they were new, and I made a good decision. The exterior shine is impressive and the finish looks clean and polished.' },
   { name: 'Lieu T.', text: 'My Elantra needed some interior cleaning. Very satisfied with the work and the fair pricing.' },
