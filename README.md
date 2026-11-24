@@ -2,7 +2,7 @@
 
 Mobile car detailing site for Bright Coat Car Detailing (Stanton, CA), live at
 https://brightcoatcardetailingstanton.site (no www; www redirects to it).
-Vite + React 18, React Router, Stripe (Payment Element + Express Checkout), Cloudflare Pages,
+Vite + React 18, React Router, Stripe (Payment Element), Cloudflare Pages,
 and a Cloudflare Worker that stores bookings in the shared D1 database on the Remoticojobs account.
 
 - Booking IDs start with `BRCT-`, bookings are stored with `source = 'brightcoat-stanton'`.
