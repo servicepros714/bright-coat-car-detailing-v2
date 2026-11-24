@@ -229,3 +229,13 @@ h1.hero-kicker {
   color: var(--moss);
   font-weight: 700;
 }
+
+/* Checkout: Express Checkout (Link, Apple Pay, Google Pay), hidden until Stripe reports a method */
+.express { display: none; }
+.express.is-ready { display: block; }
+.pay-divider {
+  display: flex; align-items: center; gap: 12px; margin: -6px 0 -4px;
+  font-family: var(--f-mono); font-size: 0.75rem; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted);
+}
+.pay-divider::before, .pay-divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }

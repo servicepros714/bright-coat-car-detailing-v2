@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { loadStripe } from '@stripe/stripe-js';
-import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { Elements, ExpressCheckoutElement, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 import { ArrowLeft, Lock, Tag, Loader2, Check, BadgePercent, CalendarDays, MapPin } from 'lucide-react';
@@ -49,9 +49,12 @@ function PayForm({ amount, onPaid, onBefore, precheck, busy, setBusy, email }) {
   const stripe = useStripe();
   const elements = useElements();
   const [ready, setReady] = useState(false);
+  const [expressReady, setExpressReady] = useState(false);
 
+  // Card form submit and the Express Checkout buttons (Link, Apple Pay, Google Pay) both end
+  // here. Elements was created with the PaymentIntent's clientSecret, so confirm directly.
   async function pay(e) {
-    e.preventDefault();
+    e?.preventDefault?.();
     if (!stripe || !elements || busy) return;
     setBusy(true);
     if (!(await precheck())) { setBusy(false); return; }
@@ -86,6 +89,14 @@ function PayForm({ amount, onPaid, onBefore, precheck, busy, setBusy, email }) {
 
   return (
     <form onSubmit={pay} className="pay-form">
+      <div className={`express${expressReady ? ' is-ready' : ''}`}>
+        <ExpressCheckoutElement
+          onConfirm={() => pay()}
+          onReady={(ev) => setExpressReady(Boolean(ev?.availablePaymentMethods))}
+          options={{ buttonHeight: 48 }}
+        />
+      </div>
+      {expressReady && <p className="pay-divider"><span>or pay with card</span></p>}
       <PaymentElement onReady={() => setReady(true)} options={{ layout: 'tabs' }} />
       <button type="submit" className="btn btn-primary btn-lg btn-block" disabled={!stripe || !ready || busy}>
         {busy ? <><Loader2 className="spin" size={18} /> Processing…</> : <><Lock size={16} /> Pay ${amount}</>}
