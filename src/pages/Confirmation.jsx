@@ -103,7 +103,7 @@ export default function Confirmation() {
           <CheckCircle2 size={48} className="confirm-ok" />
           <p className="mono-label">Booking {data.id}</p>
           <h1>You are booked, {data.name.split(' ')[0]}.</h1>
-          <p>We will reach out at {data.phone} to confirm the details before we arrive.</p>
+          <p>Your appointment is confirmed. Questions or changes? Call <a href={BUSINESS.phoneHref}>{BUSINESS.phone}</a> with your booking ID.</p>
 
           <dl className="confirm-list">
             <div><dt>Service</dt><dd>{serviceLabel(data.pkg, data.addon)}</dd></div>
