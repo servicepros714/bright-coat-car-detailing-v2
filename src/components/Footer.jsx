@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Phone, MapPin, Clock, ArrowUpRight } from 'lucide-react';
-import { BUSINESS, SERVICE_AREA } from '../lib/business.js';
+import { BUSINESS, REVIEWS } from '../lib/business.js';
+import { SERVICE_PAGES, CITY_PAGES, HOME_CITY } from '../lib/pages.js';
 
 export default function Footer() {
   const year = new Date().getFullYear();
@@ -13,7 +14,7 @@ export default function Footer() {
       <div className="container ftr-top">
         <img src="/images/logo.webp" alt={BUSINESS.name} className="ftr-logo" width="200" height="198" />
         <p className="ftr-lede">
-          Mobile interior detailing and hand washes, brought to your driveway in Stanton and the neighboring cities.
+          Mobile interior detailing and hand washes, brought to your driveway in Stanton and the neighboring cities, with our own water and power.
         </p>
         <div className="ftr-cta">
           <a href={BUSINESS.phoneHref} className="btn btn-light"><Phone size={16} /> {BUSINESS.phone}</a>
@@ -36,13 +37,27 @@ export default function Footer() {
             <Link to="/#packages">Packages</Link>
             <Link to="/#process">How it works</Link>
             <Link to="/#gallery">Our work</Link>
+            {REVIEWS.length > 0 && <Link to="/#reviews">Reviews</Link>}
             <Link to="/#faq">FAQ</Link>
             <Link to="/book">Book</Link>
           </p>
         </div>
         <div className="ftr-row">
+          <span className="mono-label">Services</span>
+          <p className="ftr-links">
+            {SERVICE_PAGES.map((p) => (
+              <Link key={p.path} to={p.path}>{p.nav}</Link>
+            ))}
+          </p>
+        </div>
+        <div className="ftr-row">
           <span className="mono-label">Areas</span>
-          <p className="ftr-areas">{SERVICE_AREA.join(' · ')}</p>
+          <p className="ftr-links">
+            <Link to="/">{HOME_CITY}</Link>
+            {CITY_PAGES.map((p) => (
+              <Link key={p.path} to={p.path}>{p.city}</Link>
+            ))}
+          </p>
         </div>
       </div>
 

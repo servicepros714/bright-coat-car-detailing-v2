@@ -1,0 +1,222 @@
+/* SEO additions: keyword H1 in the hero, link pills, reviews, landing pages, 404. */
+
+/* Home hero: the small "Mobile car detailing in Stanton, CA" label is the H1. */
+h1.hero-kicker {
+  line-height: 1.5;
+  letter-spacing: inherit;
+}
+.hero .hero-title {
+  font-family: var(--f-serif);
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+}
+
+/* ---------- Link pills ---------- */
+.link-pills li {
+  padding: 0;
+}
+/* Only the "home" pill is highlighted in link lists (the design highlights the first pill). */
+.link-pills li:first-child:not(.pill-home) {
+  background: var(--card);
+  color: inherit;
+  border-color: var(--line);
+}
+.link-pills li.pill-home {
+  background: var(--moss);
+  color: var(--paper);
+  border-color: var(--moss);
+}
+.link-pills a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  color: inherit;
+  text-decoration: none;
+  transition: background 0.2s, color 0.2s;
+}
+.link-pills li:hover {
+  border-color: var(--moss);
+}
+.link-pills li:not(.pill-home) a:hover {
+  background: var(--sage-soft);
+}
+.area-p {
+  color: var(--muted);
+  font-size: 1.02rem;
+  margin: 18px 0 22px;
+  max-width: 520px;
+}
+.area-p a {
+  color: var(--moss);
+  font-weight: 700;
+}
+.pkg-links {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 40px;
+}
+.pkg-links .pills {
+  justify-content: center;
+  margin: 0;
+}
+
+/* ---------- Reviews ---------- */
+.reviews {
+  background: var(--paper-2);
+}
+.rev-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+}
+.rev {
+  margin: 0;
+  padding: 26px 26px 22px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+.rev blockquote {
+  margin: 0;
+  font-family: var(--f-serif);
+  font-size: 1.08rem;
+  line-height: 1.55;
+  color: var(--ink);
+}
+.rev figcaption {
+  margin-top: 14px;
+  font-family: var(--f-mono);
+  font-size: 0.82rem;
+  color: var(--taupe);
+}
+
+/* ---------- Landing pages ---------- */
+.lp-hero {
+  padding-bottom: 90px;
+}
+.lp-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 56px;
+  align-items: center;
+}
+.lp-crumbs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+  font-family: var(--f-mono);
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.lp-crumbs a {
+  color: var(--moss);
+}
+.lp-title {
+  font-size: clamp(2.4rem, 5.4vw, 4.4rem);
+  line-height: 1.02;
+  letter-spacing: -0.025em;
+}
+.lp-title em {
+  display: block;
+}
+.lp-facts {
+  list-style: none;
+  margin: 26px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  font-weight: 700;
+  color: var(--forest);
+}
+.lp-facts li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.lp-facts svg {
+  color: var(--sage);
+}
+.lp-card {
+  align-self: center;
+}
+.lp-card-name {
+  font-size: 1.7rem;
+  margin: 10px 0 8px;
+  color: var(--paper);
+}
+.lp-card-list {
+  grid-template-columns: 1fr !important;
+}
+.lp-card-btn {
+  width: 100%;
+  margin-top: 26px;
+  justify-content: center;
+}
+.lp-card-note {
+  margin-top: 14px;
+  font-size: 0.88rem;
+  text-align: center;
+  color: rgba(236, 235, 228, 0.72);
+}
+
+.lp-intro {
+  background: var(--paper-2);
+}
+.lp-intro-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 56px;
+  align-items: center;
+}
+.lp-p {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1.75;
+}
+.lp-photo {
+  margin: 0;
+  border-radius: 200px 200px var(--r-lg) var(--r-lg);
+  overflow: hidden;
+  aspect-ratio: 4 / 5;
+  max-height: 560px;
+}
+.lp-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.lp-points-list {
+  max-width: 820px;
+  margin: 0 auto;
+}
+
+.lp-related {
+  padding-top: 0;
+}
+.lp-related-title {
+  font-size: 1.5rem;
+  margin: 28px 0 14px;
+}
+
+/* ---------- 404 ---------- */
+.notfound .pills {
+  justify-content: center;
+}
+
+@media (max-width: 960px) {
+  .lp-grid,
+  .lp-intro-grid {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+  .lp-photo {
+    max-height: 460px;
+  }
+}

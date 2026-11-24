@@ -10,6 +10,9 @@ import Book from './pages/Book.jsx';
 import Checkout from './pages/Checkout.jsx';
 import Confirmation from './pages/Confirmation.jsx';
 import NotFound from './pages/NotFound.jsx';
+import Landing from './pages/Landing.jsx';
+import Seo from './components/Seo.jsx';
+import { LANDING_PAGES } from './lib/pages.js';
 
 function ScrollManager() {
   const { pathname, hash } = useLocation();
@@ -33,10 +36,14 @@ export default function App() {
   return (
     <BookingProvider>
       <ScrollManager />
+      <Seo />
       <Header compact={flow} />
       <main className={flow ? 'main main--flow' : 'main'}>
         <Routes>
           <Route path="/" element={<Home />} />
+          {LANDING_PAGES.map((page) => (
+            <Route key={page.path} path={page.path} element={<Landing page={page} />} />
+          ))}
           <Route path="/book" element={<Book />} />
           <Route path="/checkout" element={<Checkout />} />
           <Route path="/confirmation" element={<Confirmation />} />

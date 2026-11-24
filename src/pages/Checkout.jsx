@@ -56,11 +56,21 @@ function PayForm({ amount, onPaid, onBefore, precheck, busy, setBusy, email }) {
     setBusy(true);
     if (!(await precheck())) { setBusy(false); return; }
     onBefore();
-    const { error, paymentIntent } = await stripe.confirmPayment({
-      elements,
-      confirmParams: { return_url: `${window.location.origin}/confirmation`, receipt_email: email },
-      redirect: 'if_required',
-    });
+    let result;
+    try {
+      result = await stripe.confirmPayment({
+        elements,
+        confirmParams: { return_url: `${window.location.origin}/confirmation`, receipt_email: email },
+        redirect: 'if_required',
+      });
+    } catch (err) {
+      // Never fail silently: show whatever Stripe.js threw.
+      console.error(err);
+      toast.error(err?.message || 'Payment could not start. Please try again or choose "Pay later".');
+      setBusy(false);
+      return;
+    }
+    const { error, paymentIntent } = result;
     if (error) {
       toast.error(error.message || 'Payment could not be completed.');
       setBusy(false);
@@ -142,14 +152,15 @@ export default function Checkout() {
     try {
       const res = await createBooking(payload);
       try {
-        sessionStorage.setItem(CONFIRMED_KEY, JSON.stringify({ ...payload, id: res.id, total: extra.payment_status === 'Paid' ? total : subtotal }));
+        sessionStorage.setItem(CONFIRMED_KEY, JSON.stringify({ ...payload, id: res.id, payment_status: res.payment_status, total: res.total ?? (extra.payment_status === 'Paid' ? total : subtotal) }));
         sessionStorage.removeItem(PENDING_KEY);
       } catch { /* ignore */ }
       navigate('/confirmation', { replace: true });
     } catch (err) {
       setBusy(false);
       if (err.status === 409) {
-        toast.error('That time was just taken. Please choose another slot.');
+        // The Worker's message says whether a card payment was refunded.
+        toast.error(err.message || 'That time was just taken. Please choose another slot.', { duration: 8000 });
         navigate('/book');
       } else {
         toast.error(err.message || 'We could not save your booking. Please call us.');

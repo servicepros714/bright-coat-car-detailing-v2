@@ -1,8 +1,9 @@
 // All scheduling runs on California time, whatever timezone the visitor's device is in.
 const TZ = 'America/Los_Angeles';
 export const LEAD_HOURS = 4;
-export const OPEN_MIN = 7 * 60;   // 7:00 AM
-export const CLOSE_MIN = 19 * 60; // 7:00 PM (last slot)
+export const OPEN_MIN = 8 * 60;   // 8:00 AM (first start time)
+export const CLOSE_MIN = 17 * 60; // 5:00 PM (last start time); must match worker/worker.js
+export const MAX_DAYS = 90;       // the Worker rejects dates further out
 export const STEP_MIN = 30;
 
 export function caNow() {

@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { Menu, X, Phone, CalendarCheck, MapPin, Clock } from 'lucide-react';
-import { BUSINESS } from '../lib/business.js';
+import { BUSINESS, REVIEWS } from '../lib/business.js';
 
 const LINKS = [
   { href: '/#packages', label: 'Packages' },
   { href: '/#process', label: 'How it works' },
   { href: '/#gallery', label: 'Our work' },
   { href: '/#why', label: 'Why us' },
+  ...(REVIEWS.length ? [{ href: '/#reviews', label: 'Reviews' }] : []),
   { href: '/#faq', label: 'FAQ' },
 ];
 

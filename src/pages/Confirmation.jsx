@@ -56,7 +56,7 @@ export default function Confirmation() {
       if (status !== 'succeeded' && status !== 'processing') { setState('failed'); return; }
       createBooking({ ...pending, payment_status: 'Paid', payment_intent_id: pi })
         .then((res) => {
-          const saved = { ...pending, id: res.id };
+          const saved = { ...pending, id: res.id, payment_status: res.payment_status, total: res.total };
           sessionStorage.setItem(CONFIRMED_KEY, JSON.stringify(saved));
           sessionStorage.removeItem(PENDING_KEY);
           setData(saved);

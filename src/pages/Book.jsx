@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
   addMonths, startOfMonth, endOfMonth, startOfWeek, endOfWeek, eachDayOfInterval,
-  format, isSameMonth,
+  format, isSameMonth, addDays,
 } from 'date-fns';
 import { ArrowLeft, ArrowRight, Check, ChevronLeft, ChevronRight, Droplets, Plus, Loader2, Sun, Sunset, Moon } from 'lucide-react';
 import { PACKAGES, ADDON, serviceTotal } from '../lib/business.js';
 import { useBooking } from '../lib/bookingStore.jsx';
 import { getBookedTimes, apiConfigured } from '../lib/api.js';
-import { allSlots, isSlotOpen, dateHasOpenSlots, toISO, fromISO, firstBookableDate, caNow } from '../lib/schedule.js';
+import { allSlots, isSlotOpen, dateHasOpenSlots, toISO, fromISO, firstBookableDate, caNow, MAX_DAYS } from '../lib/schedule.js';
 import { formatPhone, isValidUSPhone, isValidEmail } from '../lib/format.js';
 
 const STEPS = ['Package', 'Add-on', 'Date', 'Time', 'Your info'];
@@ -77,6 +77,8 @@ function StepDate({ booking, update }) {
   const first = firstBookableDate();
   const [month, setMonth] = useState(() => startOfMonth(booking.date ? fromISO(booking.date) : first));
   const minMonth = startOfMonth(first);
+  const maxISO = toISO(addDays(fromISO(caNow().date), MAX_DAYS));
+  const maxMonth = startOfMonth(fromISO(maxISO));
   const days = eachDayOfInterval({
     start: startOfWeek(startOfMonth(month)),
     end: endOfWeek(endOfMonth(month)),
@@ -90,7 +92,7 @@ function StepDate({ booking, update }) {
           <ChevronLeft size={20} />
         </button>
         <strong>{format(month, 'MMMM yyyy')}</strong>
-        <button type="button" onClick={() => setMonth(addMonths(month, 1))} aria-label="Next month">
+        <button type="button" onClick={() => setMonth(addMonths(month, 1))} disabled={month >= maxMonth} aria-label="Next month">
           <ChevronRight size={20} />
         </button>
       </div>
@@ -101,7 +103,7 @@ function StepDate({ booking, update }) {
         {days.map((d) => {
           const iso = toISO(d);
           const inMonth = isSameMonth(d, month);
-          const disabled = !inMonth || !dateHasOpenSlots(iso);
+          const disabled = !inMonth || !dateHasOpenSlots(iso) || iso > maxISO;
           const selected = booking.date === iso;
           return (
             <button
@@ -116,7 +118,7 @@ function StepDate({ booking, update }) {
           );
         })}
       </div>
-      <p className="step-note">Open Mon–Sun by appointment. Same-day slots start 4 hours from now (California time).</p>
+      <p className="step-note">Open every day, start times 8 AM – 5 PM. Same-day slots start 4 hours from now (California time).</p>
     </div>
   );
 }
@@ -212,6 +214,14 @@ function StepInfo({ booking, update, refs, errors, clearError }) {
 
 export default function Book() {
   const { booking, update } = useBooking();
+  const [params] = useSearchParams();
+
+  // Landing pages link to /book?service=basic|premium to preselect a package.
+  useEffect(() => {
+    const pkg = params.get('service');
+    if (PACKAGES.some((p) => p.id === pkg)) update({ pkg });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [errors, setErrors] = useState({});

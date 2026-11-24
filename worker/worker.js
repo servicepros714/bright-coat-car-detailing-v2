@@ -1,381 +1,422 @@
-/**
- * Bright Coat Car Detailing Stanton — booking API (Cloudflare Worker)
- *
- * Worker name:  brightcoat-detailing-worker
- * Bindings:     DB                 -> D1 database (shared detailing-bookings table)
- * Secrets:      STRIPE_SECRET_KEY  -> sk_live_... (Settings > Variables > Secret)
- * Optional:     ALLOWED_ORIGIN     -> e.g. https://bright-coat-car-detailing-stanton.pages.dev (comma-separate several)
- *               ADMIN_TOKEN        -> if set, admin routes require "Authorization: Bearer <token>"
- *
- * Routes
- *   GET    /api/health
- *   GET    /api/availability?date=YYYY-MM-DD
- *   POST   /api/create-payment-intent      (never touches D1)
- *   POST   /api/bookings
- *   GET    /api/bookings                   (admin, source-scoped)
- *   GET    /api/bookings/:id
- *   PATCH  /api/bookings/:id               (admin)
- *   DELETE /api/bookings/:id               (admin)
- */
+// bright-coat-car-detailing-v2
+// Cloudflare Worker for Bright Coat Car Detailing (Stanton): availability, Stripe
+// PaymentIntents and bookings, in the shared D1 database `detailing-bookings-remoticojobs`.
+// Every read/write is scoped by source = "brightcoat-stanton". Dates/times are California time.
+//
+// Flow (matches src/pages/Checkout.jsx + Confirmation.jsx):
+//   card:      POST /api/create-payment-intent -> browser confirms with Stripe ->
+//              POST /api/bookings { paymentIntentId }  (the Worker re-reads the PaymentIntent
+//              from Stripe and checks status, site, amount, services, date and time)
+//   pay later: POST /api/bookings { payLater: true }
+// A new booking sends one `booking_confirmed` event to GHL (booking_notifications makes it once-only).
+//
+// Secrets (dashboard -> Worker -> Settings -> Variables and Secrets, or `wrangler secret put`):
+//   STRIPE_SECRET_KEY  required. Same Stripe account as VITE_STRIPE_PUBLISHABLE_KEY
+//   GHL_WEBHOOK_URL    required for the booking email
+//   ADMIN_TOKEN        optional. `Authorization: Bearer <token>` for GET/PATCH /api/bookings.
+//                      Without it the admin routes stay closed.
+//
+// The shared tables already exist; this Worker never creates or alters tables.
 
-const SOURCE = 'brightcoat';
-const ID_PREFIX = 'BRCT-';
-const TZ = 'America/Los_Angeles';
-const LEAD_HOURS = 4;
-const OPEN_MIN = 7 * 60;
-const CLOSE_MIN = 19 * 60;
-const STEP_MIN = 30;
+const SOURCE = 'brightcoat-stanton'
+const SOURCE_LABEL = 'Bright Coat Car Detailing'
+const PREFIX = 'BRCT-'
 
-const PACKAGES = {
+const SERVICES = {
   basic: { name: 'Basic Detail', price: 150 },
   premium: { name: 'Premium Detail', price: 200 },
-};
-const ADDON = { name: 'Exterior Wash', price: 50 };
-const COUPONS = { PREPAY: 15 };
+  exterior: { name: 'Exterior Wash', price: 50 }, // add-on only
+}
+const COUPONS = { PREPAY: 15 }
 
-const COLUMNS = [
-  'id', 'date', 'time', 'service', 'name', 'phone', 'email', 'vehicle', 'address', 'notes',
-  'source', 'created_at', 'status', 'reschedule_date', 'reschedule_time', 'notes2',
-  'original_date', 'original_time', 'payment_status',
-];
-const PATCHABLE = [
-  'reschedule_date', 'reschedule_time', 'original_date', 'original_time', 'notes2',
-  'status', 'payment_status', 'notes', 'date', 'time', 'name', 'phone', 'email', 'vehicle', 'address', 'service',
-];
-const CANCELLED = ['cancelled', 'canceled'];
+// Start times 8:00 AM - 5:00 PM, every 30 minutes, every day (must match src/lib/schedule.js).
+const SLOT_START_MIN = 8 * 60
+const SLOT_END_MIN = 17 * 60
+const SLOT_STEP_MIN = 30
+const LEAD_MINUTES = 240
+const MAX_DAYS_AHEAD = 90
+const SLOTS = (() => {
+  const out = []
+  for (let t = SLOT_START_MIN; t <= SLOT_END_MIN; t += SLOT_STEP_MIN) {
+    const h24 = Math.floor(t / 60)
+    const m = t % 60
+    out.push(`${h24 % 12 === 0 ? 12 : h24 % 12}:${String(m).padStart(2, '0')} ${h24 >= 12 ? 'PM' : 'AM'}`)
+  }
+  return out
+})()
 
-/* ---------------- helpers ---------------- */
+// Fields the shared admin dashboard is allowed to update.
+const PATCHABLE = new Set([
+  'status',
+  'payment_status',
+  'notes2',
+  'reschedule_date',
+  'reschedule_time',
+  'original_date',
+  'original_time',
+])
 
-function corsHeaders(request, env) {
-  const origin = request.headers.get('Origin') || '';
-  const allowed = (env.ALLOWED_ORIGIN || '').split(',').map((s) => s.trim()).filter(Boolean);
-  const allow = !allowed.length ? '*' : allowed.includes(origin) ? origin : allowed[0];
+function corsHeaders(env) {
   return {
-    'Access-Control-Allow-Origin': allow,
-    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+    'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN || '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Max-Age': '86400',
-    Vary: 'Origin',
-  };
+  }
 }
 
-function json(data, status, cors) {
-  return new Response(JSON.stringify(data), {
-    status: status || 200,
-    headers: { 'Content-Type': 'application/json', ...cors },
-  });
+function json(env, body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...corsHeaders(env) },
+  })
 }
 
-const clean = (v, max = 200) => String(v == null ? '' : v).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
-
-function isUSPhone(v) {
-  let d = String(v || '').replace(/\D/g, '');
-  if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
-  return /^[2-9]\d{2}[2-9]\d{6}$/.test(d);
-}
-
-function formatPhone(v) {
-  let d = String(v || '').replace(/\D/g, '');
-  if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
-  return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6, 10)}`;
-}
-
-const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(v || '').trim());
-
-function slotLabel(min) {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
-}
-
-const SLOTS = (() => {
-  const out = [];
-  for (let m = OPEN_MIN; m <= CLOSE_MIN; m += STEP_MIN) out.push(slotLabel(m));
-  return out;
-})();
-
-function slotMinutes(lbl) {
-  const [t, ap] = lbl.split(' ');
-  let [h, m] = t.split(':').map(Number);
-  if (ap === 'PM' && h !== 12) h += 12;
-  if (ap === 'AM' && h === 12) h = 0;
-  return h * 60 + m;
-}
-
-function caNow() {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).formatToParts(new Date());
-  const g = (t) => parts.find((p) => p.type === t).value;
-  return { date: `${g('year')}-${g('month')}-${g('day')}`, minutes: Number(g('hour')) * 60 + Number(g('minute')) };
-}
-
-function slotIsBookable(date, time) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !SLOTS.includes(time)) return false;
-  const now = caNow();
-  if (date < now.date) return false;
-  const dayDiff = Math.round((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${now.date}T00:00:00Z`)) / 86400000);
-  return slotMinutes(time) + dayDiff * 1440 >= now.minutes + LEAD_HOURS * 60;
-}
-
-function priceFor(pkg, addon, coupon) {
-  const p = PACKAGES[pkg];
-  if (!p) return null;
-  const subtotal = p.price + (addon ? ADDON.price : 0);
-  const discount = COUPONS[String(coupon || '').toUpperCase()] || 0;
-  return {
-    service: addon ? `${p.name} + ${ADDON.name}` : p.name,
-    subtotal,
-    total: subtotal - discount,
-    discount,
-  };
+class HttpError extends Error {
+  constructor(status, message, code) {
+    super(message)
+    this.status = status
+    this.code = code
+  }
 }
 
 function newId() {
-  const t = Date.now().toString(36).toUpperCase().slice(-5);
-  const r = Math.random().toString(36).slice(2, 6).toUpperCase();
-  return `${ID_PREFIX}${t}${r}`;
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  const bytes = crypto.getRandomValues(new Uint8Array(8))
+  return PREFIX + Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')
 }
 
-function isAdmin(request, env) {
-  if (!env.ADMIN_TOKEN) return true;
-  return request.headers.get('Authorization') === `Bearer ${env.ADMIN_TOKEN}`;
+// ---------- validation ----------
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+
+function nowLA() {
+  const p = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date())
+  const get = (t) => p.find((x) => x.type === t).value
+  return { date: `${get('year')}-${get('month')}-${get('day')}`, minutes: Number(get('hour')) * 60 + Number(get('minute')) }
 }
+
+function addDays(iso, days) {
+  const [y, m, d] = iso.split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d + days))
+  return dt.toISOString().slice(0, 10)
+}
+
+function slotMinutes(label) {
+  const [t, sfx] = label.split(' ')
+  const [h, m] = t.split(':').map(Number)
+  return (h % 12) * 60 + (sfx === 'PM' ? 720 : 0) + m
+}
+
+// One detail (Basic or Premium), optionally plus the Exterior Wash. Returned in catalog order.
+function checkServices(list) {
+  if (!Array.isArray(list) || list.length === 0) throw new HttpError(400, 'Choose a Basic or Premium Detail.', 'services')
+  const ids = [...new Set(list.map(String))]
+  if (ids.some((id) => !SERVICES[id])) throw new HttpError(400, 'Unknown service selected.', 'services')
+  const details = ids.filter((id) => id === 'basic' || id === 'premium')
+  if (details.length !== 1) {
+    throw new HttpError(400, 'Choose either the Basic or the Premium Detail. The Exterior Wash is an add-on.', 'services')
+  }
+  return Object.keys(SERVICES).filter((id) => ids.includes(id))
+}
+
+const subtotalOf = (ids) => ids.reduce((sum, id) => sum + SERVICES[id].price, 0)
+const labelOf = (ids) => ids.map((id) => SERVICES[id].name).join(' + ')
+
+function couponCode(code) {
+  const c = String(code || '').trim().toUpperCase()
+  return COUPONS[c] ? c : ''
+}
+
+// enforceLead is false when saving a booking that is already paid, so a customer who paid
+// just before the cutoff is never rejected after their card was charged.
+function checkSlot(date, time, enforceLead = true) {
+  if (!ISO_DATE.test(date || '')) throw new HttpError(400, 'Pick a valid date.', 'date')
+  if (!SLOTS.includes(time)) throw new HttpError(400, 'Pick a valid time.', 'time')
+  const now = nowLA()
+  if (date < now.date) throw new HttpError(400, 'That date has already passed.', 'date')
+  if (date > addDays(now.date, MAX_DAYS_AHEAD)) throw new HttpError(400, 'Please pick a date within the next 90 days.', 'date')
+  if (enforceLead && date === now.date && slotMinutes(time) < now.minutes + LEAD_MINUTES) {
+    throw new HttpError(400, 'That time is too soon. Please pick a later time.', 'time')
+  }
+}
+
+function checkContact(b) {
+  const clean = (v, max) => String(v || '').trim().slice(0, max)
+  const out = {
+    name: clean(b.name, 120),
+    phone: clean(b.phone, 30),
+    email: clean(b.email, 200),
+    vehicle: clean(b.vehicle, 120),
+    address: clean(b.address, 250),
+  }
+  if (out.name.length < 2) throw new HttpError(400, 'Enter your full name.', 'name')
+  if (out.phone.replace(/\D/g, '').length < 10) throw new HttpError(400, 'Enter a valid phone number.', 'phone')
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(out.email)) throw new HttpError(400, 'Enter a valid email address.', 'email')
+  if (out.vehicle.length < 3) throw new HttpError(400, 'Enter your vehicle (year, make, model).', 'vehicle')
+  if (out.address.length < 6) throw new HttpError(400, 'Enter the address where we should meet you.', 'address')
+  return out
+}
+
+// ---------- D1 ----------
+
+async function slotTaken(db, date, time) {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM bookings
+       WHERE source = ? AND date = ? AND time = ?
+       AND LOWER(COALESCE(status, '')) NOT IN ('cancelled', 'canceled')`,
+    )
+    .bind(SOURCE, date, time)
+    .first()
+  return (row?.n || 0) > 0
+}
+
+async function findByPaymentIntent(db, piId) {
+  return db
+    .prepare(
+      `SELECT b.id, b.payment_status, p.total FROM booking_payments p
+       JOIN bookings b ON b.id = p.booking_id
+       WHERE p.payment_intent_id = ? AND b.source = ? LIMIT 1`,
+    )
+    .bind(piId, SOURCE)
+    .first()
+}
+
+// ---------- Stripe ----------
 
 async function stripe(env, method, path, params) {
-  const body = params ? new URLSearchParams(params).toString() : undefined;
+  if (!env.STRIPE_SECRET_KEY) throw new HttpError(500, 'Payments are not configured yet.', 'stripe_config')
   const res = await fetch(`https://api.stripe.com/v1${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
+      ...(params ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
     },
-    body,
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error((data.error && data.error.message) || 'Stripe request failed');
-  return data;
+    body: params ? new URLSearchParams(params) : undefined,
+  })
+  const data = await res.json()
+  if (!res.ok) throw new HttpError(502, data?.error?.message || 'Payment provider error.', 'stripe')
+  return data
 }
 
-/* ---------------- schema ---------------- */
+// ---------- GHL ----------
 
-let schemaReady = false;
+// Sends the booking to GHL once: the booking_notifications row is the claim, and it is
+// released if GHL did not accept the event so a retry can send it again.
+async function notifyBookingConfirmed(env, booking) {
+  if (!env.GHL_WEBHOOK_URL) return
+  const claim = await env.DB.prepare(
+    `INSERT OR IGNORE INTO booking_notifications (booking_id, event, created_at) VALUES (?, 'booking_confirmed', ?)`,
+  ).bind(booking.id, new Date().toISOString()).run()
+  if (!claim.meta.changes) return
 
-async function ensureSchema(db) {
-  if (schemaReady) return;
-  const create = `
-    CREATE TABLE IF NOT EXISTS bookings (
-      id TEXT PRIMARY KEY,
-      date TEXT, time TEXT, service TEXT, name TEXT, phone TEXT, email TEXT,
-      vehicle TEXT, address TEXT, notes TEXT, source TEXT, created_at TEXT,
-      status TEXT, reschedule_date TEXT, reschedule_time TEXT, notes2 TEXT,
-      original_date TEXT, original_time TEXT, payment_status TEXT
-    )`.replace(/\s+/g, ' ').trim();
-  await db.prepare(create).run();
+  const res = await fetch(env.GHL_WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...booking, source: SOURCE, source_label: SOURCE_LABEL, event_type: 'booking_confirmed' }),
+  }).catch(() => null)
 
-  // Older shared tables may be missing newer columns — add them one at a time.
-  const info = await db.prepare('PRAGMA table_info(bookings)').all();
-  const have = new Set((info.results || []).map((c) => c.name));
-  for (const col of COLUMNS) {
-    if (!have.has(col)) {
-      try { await db.prepare(`ALTER TABLE bookings ADD COLUMN ${col} TEXT`).run(); } catch (e) { /* already added */ }
-    }
+  if (!res?.ok) {
+    await env.DB.prepare(`DELETE FROM booking_notifications WHERE booking_id = ? AND event = 'booking_confirmed'`)
+      .bind(booking.id).run()
   }
+}
+
+// ---------- routes ----------
+
+async function availability(env, url) {
+  const start = url.searchParams.get('start')
+  const end = url.searchParams.get('end')
+  if (!ISO_DATE.test(start || '') || !ISO_DATE.test(end || '') || end < start) {
+    throw new HttpError(400, 'start and end are required (YYYY-MM-DD).')
+  }
+  const { results } = await env.DB
+    .prepare(
+      `SELECT date, time FROM bookings
+       WHERE source = ? AND date >= ? AND date <= ?
+       AND LOWER(COALESCE(status, '')) NOT IN ('cancelled', 'canceled')`,
+    )
+    .bind(SOURCE, start, end)
+    .all()
+  const booked = {}
+  for (const r of results || []) (booked[r.date] ||= []).push(r.time)
+  return json(env, { booked })
+}
+
+async function createPaymentIntent(env, request) {
+  const b = await request.json()
+  const ids = checkServices(b.services)
+  checkSlot(b.date, b.time)
+  const sub = subtotalOf(ids)
+  const coupon = couponCode(b.coupon)
+  const total = sub - (coupon ? Math.min(COUPONS[coupon], sub) : 0)
+
+  // Card payments should not depend on D1, but a known clash is refused up front.
   try {
-    await db.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_source_date ON bookings (source, date)').run();
-  } catch (e) { /* index is optional */ }
-  schemaReady = true;
-}
-
-async function takenTimes(db, date) {
-  const rows = await db.prepare(
-    `SELECT COALESCE(NULLIF(reschedule_time, ''), time) AS t, LOWER(COALESCE(status, '')) AS s
-       FROM bookings
-      WHERE source = ?
-        AND ((date = ? AND COALESCE(reschedule_date, '') = '') OR reschedule_date = ?)`.replace(/\s+/g, ' ')
-  ).bind(SOURCE, date, date).all();
-  return (rows.results || []).filter((r) => !CANCELLED.includes(r.s)).map((r) => r.t);
-}
-
-/* ---------------- routes ---------------- */
-
-async function createPaymentIntent(request, env, cors) {
-  if (!env.STRIPE_SECRET_KEY) return json({ error: 'Online payment is not configured.' }, 503, cors);
-  const b = await request.json().catch(() => ({}));
-  const price = priceFor(b.pkg, !!b.addon, b.coupon);
-  if (!price) return json({ error: 'Please choose a valid package.' }, 400, cors);
+    if (await slotTaken(env.DB, b.date, b.time)) {
+      throw new HttpError(409, 'That time was just booked. Please pick another time.', 'slot_taken')
+    }
+  } catch (e) {
+    if (e instanceof HttpError) throw e
+  }
 
   const params = {
-    amount: String(price.total * 100),
+    amount: String(total * 100),
     currency: 'usd',
     'automatic_payment_methods[enabled]': 'true',
-    description: `${price.service} — Bright Coat Car Detailing Stanton`,
+    description: `${SOURCE_LABEL} - ${labelOf(ids)} on ${b.date} at ${b.time}`,
     'metadata[source]': SOURCE,
-    'metadata[service]': price.service,
-    'metadata[date]': clean(b.date, 10),
-    'metadata[time]': clean(b.time, 10),
-    'metadata[name]': clean(b.name, 80),
-    'metadata[coupon]': price.discount ? 'PREPAY' : '',
-  };
-  if (isEmail(b.email)) params.receipt_email = clean(b.email, 160);
+    'metadata[services]': ids.join(','),
+    'metadata[date]': b.date,
+    'metadata[time]': b.time,
+    'metadata[coupon]': coupon,
+    'metadata[customer]': String(b.name || '').slice(0, 100),
+  }
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email || '')) params.receipt_email = String(b.email)
 
-  const pi = await stripe(env, 'POST', '/payment_intents', params);
-  return json({ clientSecret: pi.client_secret, amount: price.total }, 200, cors);
+  const pi = await stripe(env, 'POST', '/payment_intents', params)
+  return json(env, { clientSecret: pi.client_secret, paymentIntentId: pi.id, amount: total })
 }
 
-async function createBooking(request, env, cors) {
-  const b = await request.json().catch(() => ({}));
-  const fields = {
-    name: clean(b.name, 100),
-    phone: clean(b.phone, 30),
-    email: clean(b.email, 160),
-    vehicle: clean(b.vehicle, 120),
-    address: clean(b.address, 240),
-    date: clean(b.date, 10),
-    time: clean(b.time, 10),
-  };
-  const missing = Object.entries(fields).filter(([, v]) => !v).map(([k]) => k);
-  if (missing.length) return json({ error: `Missing: ${missing.join(', ')}` }, 400, cors);
-  if (!isUSPhone(fields.phone)) return json({ error: 'Please enter a valid US phone number.' }, 400, cors);
-  if (!isEmail(fields.email)) return json({ error: 'Please enter a valid email address.' }, 400, cors);
+async function createBooking(env, request, ctx) {
+  const b = await request.json()
+  const ids = checkServices(b.services)
+  const payLater = b.payLater === true
+  checkSlot(b.date, b.time, payLater)
+  const contact = checkContact(b)
+  const sub = subtotalOf(ids)
 
-  const paid = b.payment_status === 'Paid';
-  const price = priceFor(b.pkg, !!b.addon, paid ? b.coupon : '');
-  if (!price) return json({ error: 'Please choose a valid package.' }, 400, cors);
+  let paymentStatus = 'Pay Later'
+  let coupon = null
+  let total = sub
+  let piId = null
 
-  const db = env.DB;
-  let piId = '';
+  if (!payLater) {
+    piId = String(b.paymentIntentId || '')
+    if (!/^pi_[A-Za-z0-9_]+$/.test(piId)) throw new HttpError(400, 'Missing payment confirmation.', 'payment')
 
-  if (paid) {
-    piId = clean(b.payment_intent_id, 80);
-    if (!/^pi_[A-Za-z0-9]+$/.test(piId)) return json({ error: 'Missing payment reference.' }, 400, cors);
+    // Idempotent: a refresh or retry after a successful save returns the same booking.
+    const existing = await findByPaymentIntent(env.DB, piId)
+    if (existing) return json(env, { id: existing.id, payment_status: existing.payment_status, total: existing.total, existing: true })
 
-    // Idempotency: a retried/redirected confirmation must not create a second row.
-    const existing = await db.prepare('SELECT id FROM bookings WHERE source = ? AND notes LIKE ? LIMIT 1')
-      .bind(SOURCE, `%${piId}%`).first();
-    if (existing) return json({ id: existing.id, duplicate: true }, 200, cors);
-
-    const pi = await stripe(env, 'GET', `/payment_intents/${piId}`);
-    if (!['succeeded', 'processing'].includes(pi.status)) {
-      return json({ error: 'Payment has not completed.' }, 402, cors);
+    const pi = await stripe(env, 'GET', `/payment_intents/${encodeURIComponent(piId)}`)
+    const md = pi.metadata || {}
+    if (md.source !== SOURCE) throw new HttpError(400, 'Payment does not match this business.', 'payment')
+    if (!['succeeded', 'processing'].includes(pi.status)) throw new HttpError(402, 'Payment has not completed.', 'payment')
+    if (md.services !== ids.join(',') || md.date !== b.date || md.time !== b.time) {
+      throw new HttpError(400, 'Payment does not match this booking.', 'payment')
     }
-    const expected = priceFor(b.pkg, !!b.addon, pi.metadata && pi.metadata.coupon);
-    if (pi.amount !== expected.total * 100) return json({ error: 'Payment amount mismatch.' }, 400, cors);
-    price.total = expected.total;
-    price.discount = expected.discount;
-  } else if (!slotIsBookable(fields.date, fields.time)) {
-    return json({ error: 'That time is no longer available.' }, 409, cors);
+    coupon = couponCode(md.coupon) || null
+    total = sub - (coupon ? Math.min(COUPONS[coupon], sub) : 0)
+    if (pi.amount !== total * 100) throw new HttpError(400, 'Payment amount does not match the selected services.', 'payment')
+    paymentStatus = 'Paid'
   }
 
-  const taken = await takenTimes(db, fields.date);
-  const conflict = taken.includes(fields.time);
-  // Unpaid bookings are rejected on conflict; paid ones are kept (money is already taken) and flagged.
-  if (conflict && !paid) return json({ error: 'That time was just booked.' }, 409, cors);
+  if (await slotTaken(env.DB, b.date, b.time)) {
+    if (piId) {
+      try {
+        await stripe(env, 'POST', '/refunds', { payment_intent: piId })
+      } catch {
+        throw new HttpError(409, 'That time was just booked and we could not refund automatically. Please call us.', 'slot_taken_refund_failed')
+      }
+      throw new HttpError(409, 'That time was just booked by someone else, so your payment has been refunded. Please pick another time.', 'slot_taken_refunded')
+    }
+    throw new HttpError(409, 'That time was just booked. Please pick another time.', 'slot_taken')
+  }
 
-  const notes = [
-    `Total: $${price.total}${price.discount ? ` (PREPAY -$${price.discount})` : ''}`,
-    b.addon ? 'Add-on: Exterior Wash' : '',
-    piId ? `Stripe PI: ${piId}` : '',
-  ].filter(Boolean).join(' | ');
+  const id = newId()
+  const service = labelOf(ids)
+  const createdAt = new Date().toISOString().replace('T', ' ').slice(0, 19)
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO bookings (id, date, time, service, name, phone, email, vehicle, address, notes, source, created_at, status, payment_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Confirmed', ?)`,
+    ).bind(id, b.date, b.time, service, contact.name, contact.phone, contact.email, contact.vehicle, contact.address,
+      String(b.notes || '').slice(0, 500), SOURCE, createdAt, paymentStatus),
+    env.DB.prepare(`INSERT INTO booking_payments (booking_id, subtotal, coupon, total, payment_intent_id) VALUES (?, ?, ?, ?, ?)`)
+      .bind(id, sub, coupon, total, piId),
+  ])
 
-  const row = {
-    id: newId(),
-    date: fields.date,
-    time: fields.time,
-    service: price.service,
-    name: fields.name,
-    phone: formatPhone(fields.phone),
-    email: fields.email,
-    vehicle: fields.vehicle,
-    address: fields.address,
-    notes,
-    source: SOURCE,
-    created_at: new Date().toISOString(),
-    status: 'Pending',
-    reschedule_date: null,
-    reschedule_time: null,
-    notes2: conflict ? 'Slot conflict at booking time — please reschedule with customer' : null,
-    original_date: fields.date,
-    original_time: fields.time,
-    payment_status: paid ? 'Paid' : 'Pay Later',
-  };
+  ctx.waitUntil(notifyBookingConfirmed(env, {
+    id, ...contact, service, date: b.date, time: b.time, notes: String(b.notes || ''),
+    payment_status: paymentStatus, total,
+  }))
 
-  const cols = Object.keys(row);
-  await db.prepare(`INSERT INTO bookings (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`)
-    .bind(...cols.map((c) => row[c])).run();
-
-  return json({ id: row.id, payment_status: row.payment_status }, 201, cors);
+  return json(env, { id, payment_status: paymentStatus, total }, 201)
 }
 
-async function patchBooking(request, env, cors, id) {
-  const b = await request.json().catch(() => ({}));
-  const keys = Object.keys(b).filter((k) => PATCHABLE.includes(k));
-  if (!keys.length) return json({ error: 'Nothing to update.' }, 400, cors);
-  if (b.payment_status && !['Paid', 'Pay Later'].includes(b.payment_status)) {
-    return json({ error: "payment_status must be 'Paid' or 'Pay Later'." }, 400, cors);
+async function timingSafeEqual(a, b) {
+  const enc = new TextEncoder()
+  const [ha, hb] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(a)),
+    crypto.subtle.digest('SHA-256', enc.encode(b)),
+  ])
+  return crypto.subtle.timingSafeEqual(ha, hb)
+}
+
+// Admin routes are closed unless ADMIN_TOKEN is set and matches.
+async function requireAdmin(env, request) {
+  const header = request.headers.get('Authorization') || ''
+  if (!env.ADMIN_TOKEN || !header.startsWith('Bearer ') || !(await timingSafeEqual(header.slice(7), env.ADMIN_TOKEN))) {
+    throw new HttpError(401, 'Unauthorized.')
   }
-  const res = await env.DB.prepare(`UPDATE bookings SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ? AND source = ?`)
-    .bind(...keys.map((k) => (b[k] == null ? null : clean(b[k], 500))), id, SOURCE).run();
-  if (!res.meta || !res.meta.changes) return json({ error: 'Booking not found.' }, 404, cors);
-  const row = await env.DB.prepare('SELECT * FROM bookings WHERE id = ? AND source = ?').bind(id, SOURCE).first();
-  return json({ booking: row }, 200, cors);
+}
+
+async function listBookings(env, request) {
+  await requireAdmin(env, request)
+  const { results } = await env.DB
+    .prepare(
+      `SELECT b.*, p.subtotal, p.coupon, p.total, p.payment_intent_id FROM bookings b
+       LEFT JOIN booking_payments p ON p.booking_id = b.id
+       WHERE b.source = ? ORDER BY b.date DESC, b.time DESC`,
+    )
+    .bind(SOURCE)
+    .all()
+  return json(env, results || [])
+}
+
+async function patchBooking(env, request, id) {
+  await requireAdmin(env, request)
+  const body = await request.json()
+  const entries = Object.entries(body || {}).filter(([k]) => PATCHABLE.has(k))
+  if (!entries.length) throw new HttpError(400, 'No updatable fields supplied.')
+  const sets = entries.map(([k]) => `${k} = ?`).join(', ')
+  const result = await env.DB
+    .prepare(`UPDATE bookings SET ${sets} WHERE id = ? AND source = ?`)
+    .bind(...entries.map(([, v]) => (v == null ? null : String(v))), id, SOURCE)
+    .run()
+  if (!result.meta.changes) throw new HttpError(404, 'Booking not found.')
+  return json(env, { ok: true, id })
 }
 
 export default {
-  async fetch(request, env) {
-    const cors = corsHeaders(request, env);
-    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
-
-    const url = new URL(request.url);
-    const path = url.pathname.replace(/\/+$/, '') || '/';
-    const m = request.method;
-
+  async fetch(request, env, ctx) {
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(env) })
+    const url = new URL(request.url)
+    const path = url.pathname.replace(/\/+$/, '') || '/'
     try {
-      if (path === '/api/health') return json({ ok: true, source: SOURCE }, 200, cors);
-
-      // Payment route runs before (and without) any D1 work, so a slow/locked DB never blocks checkout.
-      if (path === '/api/create-payment-intent' && m === 'POST') return await createPaymentIntent(request, env, cors);
-
-      if (!env.DB) return json({ error: 'Database binding DB is missing.' }, 500, cors);
-      await ensureSchema(env.DB);
-
-      if (path === '/api/availability' && m === 'GET') {
-        const date = url.searchParams.get('date') || '';
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: 'Invalid date.' }, 400, cors);
-        const booked = await takenTimes(env.DB, date);
-        return json({ date, booked: [...new Set(booked)] }, 200, cors);
-      }
-
-      if (path === '/api/bookings' && m === 'POST') return await createBooking(request, env, cors);
-
-      if (path === '/api/bookings' && m === 'GET') {
-        if (!isAdmin(request, env)) return json({ error: 'Unauthorized' }, 401, cors);
-        const rows = await env.DB.prepare('SELECT * FROM bookings WHERE source = ? ORDER BY date DESC, created_at DESC LIMIT 1000')
-          .bind(SOURCE).all();
-        return json({ bookings: rows.results || [] }, 200, cors);
-      }
-
-      const one = path.match(/^\/api\/bookings\/([A-Za-z0-9_-]+)$/);
-      if (one) {
-        const id = one[1];
-        if (m === 'GET') {
-          const row = await env.DB.prepare(
-            'SELECT id, date, time, service, name, status, payment_status, reschedule_date, reschedule_time FROM bookings WHERE id = ? AND source = ?'
-          ).bind(id, SOURCE).first();
-          return row ? json({ booking: row }, 200, cors) : json({ error: 'Not found' }, 404, cors);
-        }
-        if (!isAdmin(request, env)) return json({ error: 'Unauthorized' }, 401, cors);
-        if (m === 'PATCH') return await patchBooking(request, env, cors, id);
-        if (m === 'DELETE') {
-          const res = await env.DB.prepare('DELETE FROM bookings WHERE id = ? AND source = ?').bind(id, SOURCE).run();
-          return json({ deleted: !!(res.meta && res.meta.changes) }, 200, cors);
-        }
-      }
-
-      return json({ error: 'Not found' }, 404, cors);
-    } catch (err) {
-      return json({ error: err.message || 'Server error' }, 500, cors);
+      if (path === '/api/health') return json(env, { ok: true, source: SOURCE })
+      if (path === '/api/availability' && request.method === 'GET') return await availability(env, url)
+      if (path === '/api/create-payment-intent' && request.method === 'POST') return await createPaymentIntent(env, request)
+      if (path === '/api/bookings' && request.method === 'POST') return await createBooking(env, request, ctx)
+      if (path === '/api/bookings' && request.method === 'GET') return await listBookings(env, request)
+      const m = path.match(/^\/api\/bookings\/([^/]+)$/)
+      if (m && request.method === 'PATCH') return await patchBooking(env, request, decodeURIComponent(m[1]))
+      return json(env, { error: 'Not found' }, 404)
+    } catch (e) {
+      if (e instanceof HttpError) return json(env, { error: e.message, code: e.code }, e.status)
+      if (e instanceof SyntaxError) return json(env, { error: 'Invalid request.' }, 400)
+      console.error(e)
+      return json(env, { error: 'Server error. Please try again.' }, 500)
     }
   },
-};
+}
