@@ -25,7 +25,7 @@ export default function Footer() {
       <div className="container ftr-rows">
         <div className="ftr-row">
           <span className="mono-label">Visit</span>
-          <p><MapPin size={15} /> {BUSINESS.city} — we come to you</p>
+          <p><MapPin size={15} /> {BUSINESS.street}, {BUSINESS.city} {BUSINESS.zip} — we come to you</p>
         </div>
         <div className="ftr-row">
           <span className="mono-label">Hours</span>

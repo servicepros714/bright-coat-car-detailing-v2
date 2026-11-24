@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, Phone, Check, Plus, Minus, Droplets, MapPin, Star } from 'lucide-react';
-import { BUSINESS, PACKAGES, ADDON, FAQS, REVIEWS } from '../lib/business.js';
+import { BUSINESS, PACKAGES, ADDON, FAQS, REVIEWS, GOOGLE_RATING, GOOGLE_PROFILE_URL } from '../lib/business.js';
 import { SERVICE_PAGES, CITY_PAGES, HOME_CITY } from '../lib/pages.js';
 
 // Sections shared by the home page and the SEO landing pages.
@@ -131,6 +131,12 @@ export function Reviews() {
         <div className="center-head" data-reveal>
           <p className="mono-label">Reviews</p>
           <h2>What customers <em>say.</em></h2>
+          {GOOGLE_RATING && (
+            <p className="muted rev-rating">
+              Rated {GOOGLE_RATING.value} out of 5 from {GOOGLE_RATING.count} reviews on{' '}
+              <a href={GOOGLE_PROFILE_URL} target="_blank" rel="noopener noreferrer">Google</a>.
+            </p>
+          )}
         </div>
         <div className="rev-grid">
           {REVIEWS.map((r) => (

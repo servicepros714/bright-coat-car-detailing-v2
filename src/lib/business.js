@@ -13,7 +13,10 @@
 export const SITE_URL = (import.meta.env.VITE_SITE_URL || 'https://brightcoatcardetailingstanton.site').replace(/\/$/, '');
 
 // Google Business Profile, used in the schema (sameAs). Leave '' until known.
-export const GOOGLE_PROFILE_URL = '';
+export const GOOGLE_PROFILE_URL = 'https://www.google.com/search?kgmid=/g/11ysymftyc&q=Bright+Coat+Car+Detailing';
+
+// Shown above the reviews (not in the schema). Update together with the profile.
+export const GOOGLE_RATING = { value: '5.0', count: 14, asOf: 'Nov 2026' };
 
 export const BUSINESS = {
   name: 'Bright Coat Car Detailing Stanton',
@@ -22,6 +25,10 @@ export const BUSINESS = {
   phoneHref: 'tel:+17144084156',
   phoneSchema: '+1-714-408-4156',
   city: 'Stanton, CA',
+  // Same address as the Google Business Profile (as for Blacktop). Mobile only: customers
+  // are not invited to visit; we go to them.
+  street: '8101 Catherine Ave',
+  zip: '90680',
   hours: 'Every day, 8 AM – 5 PM',
   mapQuery: 'Stanton, CA',
 };
@@ -96,7 +103,18 @@ export function serviceTotal(pkgId, addon) {
 // Real Google reviews only, as { name: 'First L.', text: '...' } (first name + last initial,
 // typos fixed; leave out reviews that read like a shop visit). The section and its menu
 // link stay hidden while this is empty.
-export const REVIEWS = [];
+// From the Google profile, Nov 2026 (all 5 stars). Left out because they describe visiting
+// a shop: Lunar W. ("my parents took me here"), Hung P. ("would visit again"), Mai L. ("I came
+// here"). Bhawani B.'s review is cut where Google truncates it.
+export const REVIEWS = [
+  { name: 'Alma D.', text: 'I had a great experience with Bright Coat Car Detailing. Marcus was friendly, easy to work with, and clearly took pride in the job. My car needed some serious attention, and the difference afterward was impressive. Everything felt fresh and carefully finished, from the interior to the exterior. Thanks, Marcus, for the excellent work!' },
+  { name: 'Corrie M.', text: "I had a friend tell me about these guys and I'm so glad I took their advice. They were fast and made my SUV look great. Will be coming back soon for sure." },
+  { name: 'Bhawani B.', text: 'I went with these guys because they were reasonable on price and timing, even though they were new, and I made a good decision. The exterior shine is impressive and the finish looks clean and polished.' },
+  { name: 'Lieu T.', text: 'My Elantra needed some interior cleaning. Very satisfied with the work and the fair pricing.' },
+  { name: 'Amy M.', text: 'The service was great and welcoming. I was able to get all the info I needed and understood what the process was.' },
+  { name: 'Judy M.', text: 'My car smells so good now.' },
+  { name: 'Karla L.', text: 'Quality service deserves 10 stars.' },
+];
 
 // Home page FAQ. Shown on the page and used for the FAQPage schema, so keep both in sync.
 export const FAQS = [

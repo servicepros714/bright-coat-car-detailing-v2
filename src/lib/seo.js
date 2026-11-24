@@ -25,7 +25,8 @@ function businessNode() {
     // Cheapest visit (Basic) to the most complete one (Premium + wash). Never the add-on alone.
     priceRange: `$${basic.price}–$${premium.price + exterior.price}`,
     // Mobile only, no storefront: city only (add streetAddress if the Google profile shows one).
-    address: { '@type': 'PostalAddress', addressLocality: HOME_CITY, addressRegion: 'CA', addressCountry: 'US' },
+    // Same address as the Google Business Profile.
+    address: { '@type': 'PostalAddress', streetAddress: BUSINESS.street, addressLocality: HOME_CITY, addressRegion: 'CA', postalCode: BUSINESS.zip, addressCountry: 'US' },
     areaServed: [HOME_CITY, ...CITY_PAGES.map((p) => p.city)].map((c) => ({ '@type': 'City', name: `${c}, CA` })),
     openingHoursSpecification: [
       {
