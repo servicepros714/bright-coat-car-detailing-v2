@@ -1,75 +1,82 @@
 # Bright Coat Car Detailing Stanton
 
-Mobile car detailing booking site — Vite + React 18, Cloudflare Pages, a Cloudflare Worker with D1, and Stripe PaymentIntents.
+Mobile car detailing site for Bright Coat Car Detailing (Stanton, CA), live at
+https://brightcoatcardetailingstanton.site (no www; www redirects to it).
+Vite + React 18, React Router, Stripe (Payment Element + Express Checkout), Cloudflare Pages,
+and a Cloudflare Worker that stores bookings in the shared D1 database on the Remoticojobs account.
 
-| Item | Value |
-|---|---|
-| Phone | (714) 408-4156 |
-| Area | Stanton, CA |
-| Hours shown | Mon–Sun by appointment |
-| D1 `source` | `brightcoat` |
-| Booking ID prefix | `BRCT-` |
-| Worker name | `brightcoat-detailing-worker` |
-| Pages project | `bright-coat-car-detailing-stanton` |
-| Coupon | `PREPAY` = $15 off online payment |
+- Booking IDs start with `BRCT-`, bookings are stored with `source = 'brightcoat-stanton'`.
+- Services: Basic Detail $150 (about 2–3 hours), Premium Detail $200 (about 4–6 hours),
+  Exterior Wash +$50 (add-on only, the Worker rejects it on its own). Same price for any vehicle.
+  Eco-friendly products (confirmed by the owner).
+  Coupon `PREPAY` = $15 off when paying online.
+- Slots: start times 8:00 AM to 5:00 PM, every 30 minutes, 7 days a week, Pacific time,
+  4-hour lead time, up to 90 days ahead. Keep `src/lib/business.js` + `src/lib/schedule.js` and `worker/worker.js` in sync.
 
-## Services
+## Build
 
-- **Basic Detail — $150**
-- **Premium Detail — $200**
-- **Exterior Wash — +$50** (add-on only, booking step 2)
-
-Booking steps: Package → Add-on → Date → Time → Your info → Checkout → Confirmation.
-Time slots 7:00 AM – 7:00 PM every 30 minutes, earliest slot 4 hours after current California time.
-
-## 1. Cloudflare Worker (dashboard)
-
-1. Workers & Pages → Create → Worker → name it `brightcoat-detailing-worker` → Deploy.
-2. Edit code → paste all of `worker/worker.js` → Deploy.
-3. Settings → Bindings → Add → D1 database → variable name `DB` → choose your shared detailing-bookings database.
-4. Settings → Variables and Secrets → add Secret `STRIPE_SECRET_KEY` = your `sk_live_...` key.
-5. Optional: `ALLOWED_ORIGIN` = your Pages URL, `ADMIN_TOKEN` if your admin dashboard sends a bearer token.
-6. Visit `https://brightcoat-detailing-worker.<subdomain>.workers.dev/api/health` — it should return `{"ok":true,...}`.
-
-The table is created/migrated automatically (`worker/schema.sql` is there if you prefer to run it in the D1 console).
-
-## 2. `.env.local`
-
-Replace the two placeholders, then commit (public values only):
-
-```
-VITE_STRIPE_PUBLISHABLE_KEY=pk_live_...
-VITE_API_URL=https://brightcoat-detailing-worker.<subdomain>.workers.dev
-```
-
-## 3. GitHub (Windows CMD)
-
-```
-cd C:\Users\ESY\project\bright-coat-car-detailing-stanton
-git init
-git add .
-git commit -m "Bright Coat Car Detailing Stanton site"
-git branch -M main
-git remote add origin https://github.com/servicepros714/bright-coat-car-detailing-stanton.git
-git push -u origin main
-```
-
-Create the empty repo on GitHub first. Then in the repo: Settings → Secrets and variables → Actions → add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
-
-## 4. Cloudflare Pages
-
-Create a Pages project named `bright-coat-car-detailing-stanton` (Direct Upload, or let the first GitHub Action create it). Every push to `main` builds and deploys through `.github/workflows/deploy.yml`. `public/_redirects` handles SPA routing.
-
-## Local development
-
-```
+```bash
 npm install
-npm run dev
+npm run build   # vite build + SSR build + scripts/prerender.js
 ```
 
-## Notes
+`scripts/prerender.js` writes one static HTML file per route (`dist/<slug>.html`) with its own
+title, description, canonical, Open Graph tags and JSON-LD, writes `dist/sitemap.xml`, and fails the
+build if a title is over 60 or a description over 160 characters. Booking, checkout and
+confirmation ship head tags only (they render in the browser). There is no `_redirects` file:
+Cloudflare Pages serves `dist/404.html` for unknown URLs, and `public/_headers` keeps
+`*.pages.dev` out of search results.
 
-- `payment_status` is saved as `Paid` or `Pay Later`; new bookings start with `status = Pending`.
-- The Stripe PaymentIntent ID is stored in `notes`, which also makes paid bookings idempotent (refreshing the confirmation page never duplicates a row).
-- `PATCH /api/bookings/:id` accepts `reschedule_date, reschedule_time, original_date, original_time, notes2` plus status fields for the admin dashboard.
-- The "Why us" section links to Google for reviews rather than showing sample testimonials — add real customer reviews there when you have them.
+## Where things live
+
+- Business facts, prices, hours, home FAQ, reviews, Google profile link: `src/lib/business.js`
+  (confirmed facts are listed at the top)
+- Head tags and schema: `src/lib/seo.js`
+- Service and city landing pages (data): `src/lib/pages.js`, rendered by `src/pages/Landing.jsx`
+- Sections shared by home and landing pages: `src/components/Sections.jsx`
+- Reviews: `REVIEWS` in `src/lib/business.js` (real Google reviews only; the section and its menu
+  link stay hidden while the list is empty)
+- Photos: `public/images/`, share image `public/images/og.jpg`
+
+## Booking flow
+
+1. `/book` keeps the choices in the booking context (sessionStorage); `/checkout` shows the total.
+2. Card: `/checkout` calls `POST /api/create-payment-intent` on load (the Worker prices it), the
+   browser confirms with Stripe, then `POST /api/bookings` with the `paymentIntentId`
+   (`/confirmation` does this for redirect-based methods). `src/lib/api.js` translates the booking
+   state into the Worker's API. The Worker re-reads the PaymentIntent from Stripe and checks status, site,
+   amount, services, date and time before saving it as Paid. If the slot was taken meanwhile, it
+   refunds the payment automatically.
+3. "I'll pay later": `/checkout` calls `POST /api/bookings` with `payLater: true`.
+4. Each new booking sends one `booking_confirmed` event to the GHL webhook
+   (`booking_notifications` makes sure it is sent only once). Pricing and the PaymentIntent are
+   stored in `booking_payments`, like the other Remoticojobs sites.
+
+## Worker
+
+`worker/worker.js`, config in `worker/wrangler.jsonc` (account Remoticojobs, D1
+`detailing-bookings-remoticojobs`, shared with Alera, Apex, Aventa, Aurum, Blacktop and Bonnie; every query is
+scoped by `source`). The Worker never creates or alters tables. Deploy from `worker/`:
+
+```bash
+npx wrangler deploy
+```
+
+Secrets (dashboard → Workers → bright-coat-car-detailing-v2 → Settings → Variables and Secrets):
+
+| Name | Required | What |
+|---|---|---|
+| `STRIPE_SECRET_KEY` | yes | Same Stripe account as `VITE_STRIPE_PUBLISHABLE_KEY` |
+| `GHL_WEBHOOK_URL` | yes | GoHighLevel inbound webhook for the booking email |
+| `ADMIN_TOKEN` | no | `Authorization: Bearer <token>` for `GET/PATCH /api/bookings` (closed without it) |
+
+## Site deploy
+
+Cloudflare Pages project `bright-coat-car-detailing-v2` on Remoticojobs (direct upload, no Git connection):
+
+```bash
+npm run build
+npx wrangler pages deploy dist --project-name bright-coat-car-detailing-v2 --branch main
+```
+
+`.env.local` holds only public values (Stripe publishable key, Worker URL) and is committed on purpose.
